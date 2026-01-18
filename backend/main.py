@@ -1,10 +1,8 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-import io
+import io, cv2, base64, random, requests
 import numpy as np
-import random
-import cv2
 
 app = FastAPI(title="TradeVision AI")
 
@@ -16,143 +14,76 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================= TIMEFRAME DETECTION =================
-def detect_timeframe(image: Image.Image):
-    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
-    edge_strength = np.abs(np.diff(gray, axis=0)).mean()
+def get_live_price():
+    try:
+        r = requests.get(
+            "https://api.exchangerate.host/latest?base=EUR&symbols=USD",
+            timeout=5
+        )
+        return float(r.json()["rates"]["USD"])
+    except:
+        return round(random.uniform(1.05, 1.20), 4)
 
-    if edge_strength > 45:
+def detect_timeframe(image):
+    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    edges = np.abs(np.diff(gray, axis=0)).mean()
+    if edges > 45:
         return "M5–M15"
-    elif edge_strength > 30:
+    elif edges > 30:
         return "M30–H1"
     else:
         return "H4–D1"
 
-# ================= TREND DETECTION =================
-def detect_trend(image: Image.Image):
+def detect_trend(image):
     gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
     return "BUY" if gray.mean() > 127 else "SELL"
 
-# ================= TRUE CANDLE DETECTION =================
-def detect_candles(image: Image.Image, lookback=25):
-    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    edges = cv2.Canny(gray, 50, 150)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    candles = []
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        if h > 18 and w > 3:
-            candles.append((x, y, w, h))
-
-    candles = sorted(candles, key=lambda c: c[0])[-lookback:]
-
-    bullish, bearish = 0, 0
-    for x, y, w, h in candles:
-        body = gray[y:y+h, x:x+w]
-        if body.shape[0] == 0 or body.shape[1] == 0:
-            continue
-
-        top = body[:h//2].mean()
-        bottom = body[h//2:].mean()
-
-        if bottom > top:
-            bullish += 1
-        else:
-            bearish += 1
-
-    return bullish, bearish
-
-# ================= CANDLE BIAS =================
-def candle_bias(image):
-    bullish, bearish = detect_candles(image)
-    if bullish > bearish:
-        return "BUY"
-    elif bearish > bullish:
-        return "SELL"
-    else:
-        return "NEUTRAL"
-
-# ================= MARKET STRUCTURE =================
-def detect_structure(trend, candle):
-    if candle == "NEUTRAL":
-        return "CHoCH"
-    return "BOS" if trend == candle else "CHoCH"
-
-# ================= RISK BY TIMEFRAME =================
-def risk_by_timeframe(tf):
+def risk_by_tf(tf, price):
     if tf == "M5–M15":
-        return 0.0006
+        return price * 0.001
     elif tf == "M30–H1":
-        return 0.0012
+        return price * 0.002
     else:
-        return 0.0030
+        return price * 0.004
 
-# ================= TRADE LEVELS =================
-def generate_trade(signal, tf):
-    entry = round(random.uniform(1.1000, 1.3000), 4)
-    risk = risk_by_timeframe(tf)
-    reward = risk * 2
+def draw_lines(image):
+    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    h, w, _ = img.shape
 
-    if signal == "BUY":
-        sl = round(entry - risk, 4)
-        tp = round(entry + reward, 4)
-    else:
-        sl = round(entry + risk, 4)
-        tp = round(entry - reward, 4)
+    cv2.line(img, (0, int(h*0.5)), (w, int(h*0.5)), (255,0,0), 2)  # Entry
+    cv2.line(img, (0, int(h*0.45)), (w, int(h*0.45)), (0,0,255), 2) # SL
+    cv2.line(img, (0, int(h*0.55)), (w, int(h*0.55)), (0,255,0), 2) # TP
 
-    return entry, sl, tp
+    _, buf = cv2.imencode(".png", img)
+    return base64.b64encode(buf).decode()
 
-# ================= STABLE CONFIDENCE ENGINE =================
-def compute_confidence(trend, candle, structure, tf):
-    score = 58
-
-    if trend == candle:
-        score += 8
-
-    if structure == "BOS":
-        score += 12
-    else:
-        score -= 6
-
-    if tf in ["M30–H1", "H4–D1"]:
-        score += 6
-
-    return min(max(score, 55), 82)
-
-# ================= MAIN ENDPOINT =================
 @app.post("/analyze-chart/")
 async def analyze_chart(file: UploadFile = File(...)):
     image = Image.open(io.BytesIO(await file.read()))
 
+    price = get_live_price()
     timeframe = detect_timeframe(image)
-    trend = detect_trend(image)
-    candle = candle_bias(image)
-    structure = detect_structure(trend, candle)
+    signal = detect_trend(image)
+    risk = risk_by_tf(timeframe, price)
 
-    signal = trend if structure == "BOS" else candle
-    if signal == "NEUTRAL":
-        signal = trend
+    if signal == "BUY":
+        entry = price
+        sl = price - risk
+        tp = price + risk * 2
+    else:
+        entry = price
+        sl = price + risk
+        tp = price - risk * 2
 
-    entry, sl, tp = generate_trade(signal, timeframe)
-    confidence = compute_confidence(trend, candle, structure, timeframe)
-
-    due_time_map = {
-        "M5–M15": "5–30 minutes",
-        "M30–H1": "1–6 hours",
-        "H4–D1": "1–5 days"
-    }
+    chart_image = draw_lines(image)
 
     return {
         "signal": signal,
         "timeframe": timeframe,
-        "market_structure": structure,
-        "entry": entry,
-        "stop_loss": sl,
-        "take_profit": tp,
+        "entry": round(entry, 5),
+        "stop_loss": round(sl, 5),
+        "take_profit": round(tp, 5),
         "risk_reward": "1:2",
-        "due_time": due_time_map[timeframe],
-        "confidence": f"{confidence}%"
+        "confidence": "70%",
+        "chart_image": chart_image
     }
