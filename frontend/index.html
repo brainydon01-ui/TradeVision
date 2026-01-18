@@ -131,6 +131,7 @@
 <script>
 async function analyze() {
     const fileInput = document.getElementById("chart");
+
     if (!fileInput.files.length) {
         alert("Please upload a chart image");
         return;
@@ -139,28 +140,36 @@ async function analyze() {
     const formData = new FormData();
     formData.append("file", fileInput.files[0]);
 
-    const response = await fetch("http://127.0.0.1:8000/analyze-chart/", {
-        method: "POST",
-        body: formData
-    });
+    try {
+        const response = await fetch(
+            "https://tradevision-backend-aqzu.onrender.com/analyze-chart/",
+            {
+                method: "POST",
+                body: formData
+            }
+        );
 
-    const data = await response.json();
+        const data = await response.json();
 
-    const box = document.getElementById("signalBox");
-    const title = document.getElementById("signalTitle");
+        const box = document.getElementById("signalBox");
+        const title = document.getElementById("signalTitle");
 
-    box.style.display = "block";
-    box.className = "signal-box " + (data.signal === "BUY" ? "buy" : "sell");
+        box.style.display = "block";
+        box.className = "signal-box " + (data.signal === "BUY" ? "buy" : "sell");
 
-    title.innerText = data.signal;
-    title.style.color = data.signal === "BUY" ? "#22c55e" : "#ef4444";
+        title.innerText = data.signal;
+        title.style.color = data.signal === "BUY" ? "#22c55e" : "#ef4444";
 
-    document.getElementById("entry").innerText = data.entry;
-    document.getElementById("sl").innerText = data.stop_loss;
-    document.getElementById("tp").innerText = data.take_profit;
-    document.getElementById("rr").innerText = data.risk_reward;
-    document.getElementById("time").innerText = data.due_time;
-    document.getElementById("conf").innerText = data.confidence;
+        document.getElementById("entry").innerText = data.entry;
+        document.getElementById("sl").innerText = data.stop_loss;
+        document.getElementById("tp").innerText = data.take_profit;
+        document.getElementById("rr").innerText = data.risk_reward;
+        document.getElementById("time").innerText = data.due_time;
+        document.getElementById("conf").innerText = data.confidence;
+
+    } catch (error) {
+        alert("Server is waking up or unreachable. Please try again in 30 seconds.");
+    }
 }
 </script>
 
